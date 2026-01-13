@@ -1,4 +1,4 @@
-"""Test des imports - Étape 1"""
+"""Test des imports"""
 
 # Test Faiss
 import faiss

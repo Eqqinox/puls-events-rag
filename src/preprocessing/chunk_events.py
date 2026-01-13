@@ -1,0 +1,285 @@
+"""
+Script de découpage des textes en chunks pour la vectorisation.
+
+Ce script découpe les textes préparés en chunks de taille appropriée
+pour l'embedding avec Mistral.
+
+Stratégie de chunking :
+- Textes courts (< 1000 car.) : 1 chunk = 1 événement
+- Textes longs (>= 1000 car.) : découpage avec overlap
+
+Usage:
+    python src/preprocessing/chunk_events.py
+
+Entrée: src/data/processed/events_for_vectorization.json
+Sortie: src/data/processed/events_chunked.json
+"""
+
+import json
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# Chemins des fichiers
+BASE_DIR = Path(__file__).resolve().parent.parent
+INPUT_PATH = BASE_DIR / "data" / "processed" / "events_for_vectorization.json"
+OUTPUT_PATH = BASE_DIR / "data" / "processed" / "events_chunked.json"
+
+
+# Paramètres de chunking
+CHUNK_SIZE = 800  # Taille cible des chunks en caractères
+CHUNK_OVERLAP = 100  # Chevauchement entre chunks
+MIN_CHUNK_SIZE = 100  # Taille minimale d'un chunk
+
+
+def split_text_into_chunks(
+    text: str,
+    chunk_size: int = CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+    min_size: int = MIN_CHUNK_SIZE
+) -> list[str]:
+    """
+    Découpe un texte en chunks avec overlap.
+    
+    Args:
+        text: Texte à découper
+        chunk_size: Taille cible des chunks
+        overlap: Chevauchement entre chunks
+        min_size: Taille minimale d'un chunk
+        
+    Returns:
+        Liste des chunks
+    """
+    if not text or len(text) <= chunk_size:
+        return [text] if text else []
+    
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        # Calcule la fin du chunk
+        end = start + chunk_size
+        
+        # Si on n'est pas à la fin, cherche un point de coupure naturel
+        if end < len(text):
+            # Cherche un saut de ligne, un point, ou un espace
+            best_break = -1
+            
+            # Cherche dans les 100 derniers caractères du chunk
+            search_start = max(end - 100, start + min_size)
+            search_text = text[search_start:end]
+            
+            # Priorité : saut de ligne > point > espace
+            for sep in ["\n\n", "\n", ". ", " "]:
+                pos = search_text.rfind(sep)
+                if pos != -1:
+                    best_break = search_start + pos + len(sep)
+                    break
+            
+            if best_break > start + min_size:
+                end = best_break
+        
+        # Extrait le chunk
+        chunk = text[start:end].strip()
+        
+        if len(chunk) >= min_size:
+            chunks.append(chunk)
+        
+        # Avance avec overlap
+        start = end - overlap if end < len(text) else len(text)
+    
+    return chunks
+
+
+def chunk_event(event: dict) -> list[dict]:
+    """
+    Découpe un événement en un ou plusieurs chunks.
+    
+    Args:
+        event: Événement avec text_for_embedding et metadata
+        
+    Returns:
+        Liste de chunks avec leurs métadonnées
+    """
+    text = event.get("text_for_embedding", "")
+    metadata = event.get("metadata", {})
+    event_id = event.get("id", "")
+    
+    # Découpe le texte
+    text_chunks = split_text_into_chunks(text)
+    
+    # Crée un document par chunk
+    chunks = []
+    for i, chunk_text in enumerate(text_chunks):
+        chunk_doc = {
+            "chunk_id": f"{event_id}_{i}" if len(text_chunks) > 1 else event_id,
+            "event_id": event_id,
+            "chunk_index": i,
+            "total_chunks": len(text_chunks),
+            "text": chunk_text,
+            "metadata": metadata
+        }
+        chunks.append(chunk_doc)
+    
+    return chunks
+
+
+def load_prepared_events(path: Path) -> tuple[list[dict], dict]:
+    """
+    Charge les événements préparés depuis le fichier JSON.
+    
+    Args:
+        path: Chemin vers le fichier JSON
+        
+    Returns:
+        Tuple (liste des événements, métadonnées)
+    """
+    logger.info(f"Chargement des données depuis {path}")
+    
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    events = data.get("events", [])
+    metadata = data.get("metadata", {})
+    
+    logger.info(f"Chargé {len(events)} événements")
+    
+    return events, metadata
+
+
+def save_chunked_events(chunks: list[dict], metadata: dict, stats: dict, path: Path) -> None:
+    """
+    Sauvegarde les chunks dans un fichier JSON.
+    
+    Args:
+        chunks: Liste des chunks
+        metadata: Métadonnées des étapes précédentes
+        stats: Statistiques de chunking
+        path: Chemin de sortie
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    chunking_metadata = {
+        "source_metadata": metadata,
+        "chunking": {
+            "chunked_at": datetime.utcnow().isoformat() + "Z",
+            "parameters": {
+                "chunk_size": CHUNK_SIZE,
+                "chunk_overlap": CHUNK_OVERLAP,
+                "min_chunk_size": MIN_CHUNK_SIZE
+            },
+            "statistics": stats
+        }
+    }
+    
+    output_data = {
+        "metadata": chunking_metadata,
+        "chunks": chunks
+    }
+    
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"Données sauvegardées dans {path}")
+
+
+def main():
+    """Fonction principale de chunking."""
+    logger.info("=" * 60)
+    logger.info("DECOUPAGE DES TEXTES EN CHUNKS")
+    logger.info("=" * 60)
+    
+    # Charge les données préparées
+    events, metadata = load_prepared_events(INPUT_PATH)
+    
+    # Statistiques
+    stats = {
+        "total_events": len(events),
+        "total_chunks": 0,
+        "events_single_chunk": 0,
+        "events_multiple_chunks": 0,
+        "max_chunks_per_event": 0,
+        "avg_chunk_length": 0,
+        "min_chunk_length": float("inf"),
+        "max_chunk_length": 0
+    }
+    
+    all_chunks = []
+    chunk_lengths = []
+    
+    for event in events:
+        chunks = chunk_event(event)
+        all_chunks.extend(chunks)
+        
+        # Met à jour les statistiques
+        num_chunks = len(chunks)
+        stats["total_chunks"] += num_chunks
+        
+        if num_chunks == 1:
+            stats["events_single_chunk"] += 1
+        else:
+            stats["events_multiple_chunks"] += 1
+        
+        if num_chunks > stats["max_chunks_per_event"]:
+            stats["max_chunks_per_event"] = num_chunks
+        
+        for chunk in chunks:
+            length = len(chunk["text"])
+            chunk_lengths.append(length)
+            if length < stats["min_chunk_length"]:
+                stats["min_chunk_length"] = length
+            if length > stats["max_chunk_length"]:
+                stats["max_chunk_length"] = length
+    
+    # Calcule la moyenne
+    if chunk_lengths:
+        stats["avg_chunk_length"] = round(sum(chunk_lengths) / len(chunk_lengths), 2)
+    
+    if stats["min_chunk_length"] == float("inf"):
+        stats["min_chunk_length"] = 0
+    
+    # Affiche les statistiques
+    logger.info("-" * 60)
+    logger.info("STATISTIQUES DE CHUNKING")
+    logger.info("-" * 60)
+    logger.info(f"Événements traités         : {stats['total_events']}")
+    logger.info(f"Total chunks générés       : {stats['total_chunks']}")
+    logger.info(f"Événements (1 chunk)       : {stats['events_single_chunk']}")
+    logger.info(f"Événements (multi-chunks)  : {stats['events_multiple_chunks']}")
+    logger.info(f"Max chunks par événement   : {stats['max_chunks_per_event']}")
+    logger.info(f"Longueur moyenne chunk     : {stats['avg_chunk_length']} car.")
+    logger.info(f"Longueur min chunk         : {stats['min_chunk_length']} car.")
+    logger.info(f"Longueur max chunk         : {stats['max_chunk_length']} car.")
+    logger.info("-" * 60)
+    
+    # Affiche un exemple
+    if all_chunks:
+        logger.info("EXEMPLE DE CHUNK")
+        logger.info("-" * 60)
+        example = all_chunks[0]
+        logger.info(f"Chunk ID: {example['chunk_id']}")
+        logger.info(f"Event ID: {example['event_id']}")
+        logger.info(f"Index: {example['chunk_index']}/{example['total_chunks']}")
+        logger.info(f"Texte ({len(example['text'])} car.):")
+        logger.info(example['text'][:300] + "..." if len(example['text']) > 300 else example['text'])
+        logger.info("-" * 60)
+    
+    # Sauvegarde
+    save_chunked_events(all_chunks, metadata, stats, OUTPUT_PATH)
+    
+    logger.info("Chunking terminé avec succès")
+    
+    return all_chunks, stats
+
+
+if __name__ == "__main__":
+    main()
