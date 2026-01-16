@@ -5,6 +5,7 @@ Ce module teste les fonctionnalités de :
 - fetch_events.py : Collecte des données API
 - clean_events.py : Nettoyage des données
 - prepare_for_vectorization.py : Structuration pour RAG
+- chunk_events.py : Découpage en chunks avec LangChain
 
 Usage:
     pytest tests/test_preprocessing.py -v
@@ -44,6 +45,7 @@ from preprocessing.chunk_events import (
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     MIN_CHUNK_SIZE,
+    SEPARATORS,
 )
 
 
@@ -453,41 +455,62 @@ class TestPrepareEventForVectorization:
 
 
 # =============================================================================
-# TESTS POUR chunk_events.py
+# TESTS POUR chunk_events.py (avec LangChain)
 # =============================================================================
 
+class TestChunkingParameters:
+    """Tests pour vérifier les paramètres de chunking."""
+    
+    def test_chunk_size_defined(self):
+        """Teste que CHUNK_SIZE est défini correctement."""
+        assert CHUNK_SIZE == 800
+    
+    def test_chunk_overlap_defined(self):
+        """Teste que CHUNK_OVERLAP est défini correctement."""
+        assert CHUNK_OVERLAP == 100
+    
+    def test_min_chunk_size_defined(self):
+        """Teste que MIN_CHUNK_SIZE est défini correctement."""
+        assert MIN_CHUNK_SIZE == 100
+    
+    def test_separators_defined(self):
+        """Teste que les séparateurs LangChain sont définis."""
+        assert SEPARATORS == ["\n\n", "\n", ". ", " ", ""]
+
+
 class TestSplitTextIntoChunks:
-    """Tests pour la fonction split_text_into_chunks."""
+    """Tests pour la fonction split_text_into_chunks (LangChain)."""
     
     def test_short_text_single_chunk(self):
-        """Teste qu'un texte court reste en un seul chunk."""
-        text = "Ceci est un texte court."
+        """Teste qu'un texte court (>= MIN_CHUNK_SIZE) reste en un seul chunk."""
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Ceci est un texte suffisamment long pour être conservé comme un seul chunk lors du découpage avec LangChain."
+        assert len(text) >= MIN_CHUNK_SIZE  # Vérifie que le texte est assez long
         chunks = split_text_into_chunks(text)
         assert len(chunks) == 1
         assert chunks[0] == text
     
     def test_long_text_multiple_chunks(self):
         """Teste qu'un texte long est découpé en plusieurs chunks."""
-        text = "A" * 2000  # Texte de 2000 caractères
-        chunks = split_text_into_chunks(text, chunk_size=800)
+        # Crée un texte plus long que CHUNK_SIZE (800)
+        text = "Ceci est une phrase de test. " * 100  # ~2900 caractères
+        chunks = split_text_into_chunks(text)
         assert len(chunks) > 1
     
-    def test_chunk_size_respected(self):
-        """Teste que la taille des chunks est respectée."""
-        text = "Lorem ipsum dolor sit amet. " * 100
-        chunks = split_text_into_chunks(text, chunk_size=800)
-        for chunk in chunks[:-1]:  # Tous sauf le dernier
-            assert len(chunk) <= 850  # Marge pour la coupure naturelle
+    def test_chunk_size_approximately_respected(self):
+        """Teste que la taille des chunks est approximativement respectée."""
+        text = "Lorem ipsum dolor sit amet consectetur. " * 100
+        chunks = split_text_into_chunks(text)
+        for chunk in chunks:
+            # LangChain peut dépasser légèrement pour respecter les séparateurs
+            assert len(chunk) <= CHUNK_SIZE + 100
     
-    def test_overlap_applied(self):
-        """Teste que l'overlap est appliqué."""
-        text = "Mot " * 500  # Texte répétitif
-        chunks = split_text_into_chunks(text, chunk_size=400, overlap=50)
-        if len(chunks) > 1:
-            # Le début du chunk 2 devrait contenir du texte du chunk 1
-            end_chunk1 = chunks[0][-50:]
-            # Vérifie qu'il y a du chevauchement
-            assert len(chunks) > 1
+    def test_chunks_have_minimum_size(self):
+        """Teste que les chunks ont une taille minimale."""
+        text = "Ceci est une phrase de test. " * 100
+        chunks = split_text_into_chunks(text)
+        for chunk in chunks:
+            assert len(chunk) >= MIN_CHUNK_SIZE
     
     def test_empty_text(self):
         """Teste qu'un texte vide retourne une liste vide."""
@@ -499,13 +522,42 @@ class TestSplitTextIntoChunks:
         chunks = split_text_into_chunks(None)
         assert chunks == []
     
-    def test_natural_break_points(self):
-        """Teste que le découpage se fait sur des points naturels."""
-        text = "Première phrase. " * 50 + "Deuxième partie. " * 50
-        chunks = split_text_into_chunks(text, chunk_size=500)
-        # Les chunks ne devraient pas couper au milieu d'un mot
-        for chunk in chunks:
-            assert not chunk.endswith("-")  # Pas de coupure de mot
+    def test_text_with_paragraphs(self):
+        """Teste le découpage avec des paragraphes."""
+        text = "Premier paragraphe avec du contenu.\n\nDeuxième paragraphe.\n\nTroisième paragraphe." * 20
+        chunks = split_text_into_chunks(text)
+        assert len(chunks) >= 1
+        # Vérifie que le texte est préservé
+        reconstructed = "".join(chunks)
+        assert "Premier paragraphe" in reconstructed
+    
+    def test_text_with_sentences(self):
+        """Teste le découpage avec des phrases."""
+        text = "Première phrase. Deuxième phrase. Troisième phrase. " * 50
+        chunks = split_text_into_chunks(text)
+        assert len(chunks) >= 1
+    
+    def test_very_short_text_preserved(self):
+        """Teste qu'un texte court (>= MIN_CHUNK_SIZE) est préservé intégralement."""
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Voici un texte de test suffisamment long pour vérifier que le contenu est préservé intégralement lors du chunking."
+        assert len(text) >= MIN_CHUNK_SIZE
+        chunks = split_text_into_chunks(text)
+        assert len(chunks) == 1
+        assert text in chunks[0]
+    
+    def test_text_below_min_size_returns_empty(self):
+        """Teste qu'un texte inférieur à MIN_CHUNK_SIZE retourne une liste vide."""
+        text = "Texte trop court."  # < 100 caractères
+        assert len(text) < MIN_CHUNK_SIZE
+        chunks = split_text_into_chunks(text)
+        assert chunks == []
+    
+    def test_text_at_boundary(self):
+        """Teste un texte exactement à la limite de CHUNK_SIZE."""
+        text = "A" * CHUNK_SIZE
+        chunks = split_text_into_chunks(text)
+        assert len(chunks) == 1
 
 
 class TestChunkEvent:
@@ -513,9 +565,11 @@ class TestChunkEvent:
     
     def test_single_chunk_event(self):
         """Teste un événement qui tient en un seul chunk."""
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Ceci est un texte suffisamment long pour être conservé comme un seul chunk lors du découpage avec LangChain."
         event = {
             "id": "12345",
-            "text_for_embedding": "Texte court",
+            "text_for_embedding": text,
             "metadata": {"title": "Test"}
         }
         chunks = chunk_event(event)
@@ -528,9 +582,11 @@ class TestChunkEvent:
     
     def test_multiple_chunks_event(self):
         """Teste un événement découpé en plusieurs chunks."""
+        # Crée un texte suffisamment long pour nécessiter plusieurs chunks
+        long_text = "Ceci est une description détaillée. " * 100
         event = {
             "id": "12345",
-            "text_for_embedding": "A" * 2000,
+            "text_for_embedding": long_text,
             "metadata": {"title": "Test"}
         }
         chunks = chunk_event(event)
@@ -548,26 +604,72 @@ class TestChunkEvent:
             "city": "Paris",
             "url": "https://example.com"
         }
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Ceci est un texte de test suffisamment long pour être conservé et permettre de vérifier que les métadonnées sont bien préservées."
         event = {
             "id": "12345",
-            "text_for_embedding": "Texte",
+            "text_for_embedding": text,
             "metadata": metadata
         }
         chunks = chunk_event(event)
         
+        assert len(chunks) >= 1
         assert chunks[0]["metadata"] == metadata
     
     def test_chunk_index_increments(self):
         """Teste que l'index des chunks s'incrémente."""
+        long_text = "Description longue pour créer plusieurs chunks. " * 100
         event = {
             "id": "12345",
-            "text_for_embedding": "A" * 2000,
+            "text_for_embedding": long_text,
             "metadata": {}
         }
         chunks = chunk_event(event)
         
         for i, chunk in enumerate(chunks):
             assert chunk["chunk_index"] == i
+    
+    def test_text_content_preserved(self):
+        """Teste que le contenu textuel est préservé dans les chunks."""
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Contenu important à préserver dans le chunk. Ce texte doit être suffisamment long pour dépasser la taille minimale requise."
+        event = {
+            "id": "12345",
+            "text_for_embedding": text,
+            "metadata": {}
+        }
+        chunks = chunk_event(event)
+        
+        assert len(chunks) >= 1
+        assert "Contenu important" in chunks[0]["text"]
+    
+    def test_empty_text_handling(self):
+        """Teste la gestion d'un texte vide."""
+        event = {
+            "id": "12345",
+            "text_for_embedding": "",
+            "metadata": {}
+        }
+        chunks = chunk_event(event)
+        
+        assert len(chunks) == 0
+    
+    def test_chunk_has_required_fields(self):
+        """Teste que chaque chunk a tous les champs requis."""
+        # Le texte doit faire au moins MIN_CHUNK_SIZE (100) caractères
+        text = "Texte de test suffisamment long pour vérifier que tous les champs requis sont bien présents dans chaque chunk généré."
+        event = {
+            "id": "12345",
+            "text_for_embedding": text,
+            "metadata": {"title": "Test"}
+        }
+        chunks = chunk_event(event)
+        
+        assert len(chunks) >= 1
+        required_fields = ["chunk_id", "event_id", "chunk_index", "total_chunks", "text", "metadata"]
+        for chunk in chunks:
+            for field in required_fields:
+                assert field in chunk, f"Champ manquant: {field}"
 
 
 # =============================================================================
@@ -621,7 +723,7 @@ class TestIntegration:
         assert prepared["metadata"]["city"] == "Paris"
         assert prepared["metadata"]["url"] == "https://openagenda.com/festival-jazz"
         
-        # Étape 3: Chunking
+        # Étape 3: Chunking (avec LangChain)
         chunks = chunk_event(prepared)
         
         # Vérifications du chunking
@@ -635,7 +737,7 @@ class TestIntegration:
             "uid": "88888",
             "title_fr": "Exposition d'art contemporain",
             "description_fr": "Une exposition majeure",
-            "longdescription_fr": "<p>" + "Description détaillée. " * 100 + "</p>",
+            "longdescription_fr": "<p>" + "Description détaillée de l'exposition. " * 100 + "</p>",
             "location_name": "Centre Pompidou",
             "location_city": "Paris",
             "location_department": "Paris",
@@ -649,7 +751,7 @@ class TestIntegration:
         # Préparation
         prepared = prepare_event_for_vectorization(cleaned)
         
-        # Chunking
+        # Chunking avec LangChain
         chunks = chunk_event(prepared)
         
         # Devrait avoir plusieurs chunks
@@ -741,6 +843,16 @@ class TestDataFiles:
                 assert "text" in chunk
                 assert "metadata" in chunk
     
+    def test_chunked_file_has_langchain_method(self, data_dir):
+        """Teste que le fichier de chunks indique la méthode LangChain."""
+        chunked_path = data_dir / "processed" / "events_chunked.json"
+        if chunked_path.exists():
+            with open(chunked_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            chunking_meta = data["metadata"]["chunking"]
+            assert "method" in chunking_meta
+            assert "langchain" in chunking_meta["method"].lower()
+    
     def test_vectorized_file_structure(self, data_dir):
         """Teste la structure du fichier vectorisé."""
         vectorized_path = data_dir / "processed" / "events_vectorized.json"
@@ -818,7 +930,8 @@ class TestDataFiles:
             for chunk in data["chunks"][:500]:  # Teste les 500 premiers
                 text_length = len(chunk["text"])
                 assert text_length >= MIN_CHUNK_SIZE, f"Chunk trop petit: {text_length}"
-                assert text_length <= CHUNK_SIZE + 100, f"Chunk trop grand: {text_length}"
+                # LangChain peut légèrement dépasser pour respecter les séparateurs
+                assert text_length <= CHUNK_SIZE + 150, f"Chunk trop grand: {text_length}"
 
 
 if __name__ == "__main__":

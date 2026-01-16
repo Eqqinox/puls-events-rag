@@ -38,13 +38,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 INPUT_PATH = BASE_DIR / "data" / "processed" / "events_chunked.json"
 OUTPUT_JSON_PATH = BASE_DIR / "data" / "processed" / "events_vectorized.json"
 OUTPUT_NPY_PATH = BASE_DIR / "data" / "processed" / "embeddings.npy"
+CHECKPOINT_PATH = BASE_DIR / "data" / "processed" / "vectorization_checkpoint.json"
 
 
 # Configuration Mistral
 MISTRAL_MODEL = "mistral-embed"
 EMBEDDING_DIMENSION = 1024
 BATCH_SIZE = 50  # Nombre de textes par batch
-RATE_LIMIT_DELAY = 0.5  # Délai entre les batches (secondes)
+RATE_LIMIT_DELAY = 1.0  # Délai entre les batches (secondes) - augmenté
+RATE_LIMIT_429_DELAY = 30  # Délai après une erreur 429 (secondes)
+MAX_RETRIES = 5  # Nombre maximum de tentatives
 
 
 def get_mistral_client() -> Mistral:
@@ -61,7 +64,7 @@ def get_mistral_client() -> Mistral:
     return Mistral(api_key=api_key)
 
 
-def embed_batch(client: Mistral, texts: list[str], retry_count: int = 3) -> list[list[float]]:
+def embed_batch(client: Mistral, texts: list[str], retry_count: int = MAX_RETRIES) -> list[list[float]]:
     """
     Génère les embeddings pour un batch de textes.
     
@@ -85,9 +88,21 @@ def embed_batch(client: Mistral, texts: list[str], retry_count: int = 3) -> list
             return embeddings
             
         except Exception as e:
+            error_str = str(e)
+            is_rate_limit = "429" in error_str or "rate" in error_str.lower() or "capacity" in error_str.lower()
+            
             logger.warning(f"Erreur batch (tentative {attempt + 1}/{retry_count}): {e}")
+            
             if attempt < retry_count - 1:
-                time.sleep(2 ** attempt)  # Backoff exponentiel
+                if is_rate_limit:
+                    # Délai plus long pour les erreurs de rate limiting
+                    wait_time = RATE_LIMIT_429_DELAY * (attempt + 1)
+                    logger.info(f"Rate limit atteint. Pause de {wait_time}s avant nouvelle tentative...")
+                    time.sleep(wait_time)
+                else:
+                    # Backoff exponentiel pour les autres erreurs
+                    wait_time = 2 ** (attempt + 1)
+                    time.sleep(wait_time)
             else:
                 raise
 
@@ -113,6 +128,65 @@ def load_chunked_events(path: Path) -> tuple[list[dict], dict]:
     logger.info(f"Chargé {len(chunks)} chunks")
     
     return chunks, metadata
+
+
+def load_checkpoint(path: Path) -> tuple[int, list[list[float]]]:
+    """
+    Charge un checkpoint de vectorisation si disponible.
+    
+    Args:
+        path: Chemin vers le fichier de checkpoint
+        
+    Returns:
+        Tuple (index de reprise, embeddings déjà générés)
+    """
+    if not path.exists():
+        return 0, []
+    
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            checkpoint = json.load(f)
+        
+        start_index = checkpoint.get("last_processed_index", 0)
+        embeddings = checkpoint.get("embeddings", [])
+        
+        logger.info(f"Checkpoint trouvé: reprise à l'index {start_index} ({len(embeddings)} embeddings)")
+        return start_index, embeddings
+        
+    except Exception as e:
+        logger.warning(f"Erreur lors du chargement du checkpoint: {e}")
+        return 0, []
+
+
+def save_checkpoint(path: Path, index: int, embeddings: list[list[float]]) -> None:
+    """
+    Sauvegarde un checkpoint de vectorisation.
+    
+    Args:
+        path: Chemin vers le fichier de checkpoint
+        index: Dernier index traité
+        embeddings: Liste des embeddings générés
+    """
+    checkpoint = {
+        "last_processed_index": index,
+        "embeddings": embeddings,
+        "saved_at": datetime.utcnow().isoformat() + "Z"
+    }
+    
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(checkpoint, f)
+
+
+def delete_checkpoint(path: Path) -> None:
+    """
+    Supprime le fichier de checkpoint après succès.
+    
+    Args:
+        path: Chemin vers le fichier de checkpoint
+    """
+    if path.exists():
+        path.unlink()
+        logger.info("Checkpoint supprimé")
 
 
 def save_vectorized_data(
@@ -190,46 +264,67 @@ def main():
     chunks, metadata = load_chunked_events(INPUT_PATH)
     total_chunks = len(chunks)
     
+    # Vérifie s'il y a un checkpoint
+    start_index, existing_embeddings = load_checkpoint(CHECKPOINT_PATH)
+    
     # Initialise le client Mistral
     logger.info("Initialisation du client Mistral...")
     client = get_mistral_client()
     
     # Statistiques
+    total_batches = (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE
     stats = {
         "total_chunks": total_chunks,
-        "total_batches": (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE,
+        "total_batches": total_batches,
         "batch_size": BATCH_SIZE,
         "embedding_dimension": EMBEDDING_DIMENSION,
         "model": MISTRAL_MODEL
     }
     
-    logger.info(f"Vectorisation de {total_chunks} chunks en {stats['total_batches']} batches...")
+    if start_index > 0:
+        logger.info(f"Reprise de la vectorisation à partir de l'index {start_index}")
+    
+    logger.info(f"Vectorisation de {total_chunks} chunks en {total_batches} batches...")
     
     # Génère les embeddings par batch
-    all_embeddings = []
+    all_embeddings = existing_embeddings.copy()
     start_time = time.time()
+    checkpoint_interval = 50  # Sauvegarde checkpoint tous les 50 batches
     
-    for i in range(0, total_chunks, BATCH_SIZE):
-        batch_num = i // BATCH_SIZE + 1
-        batch_chunks = chunks[i:i + BATCH_SIZE]
-        batch_texts = [chunk["text"] for chunk in batch_chunks]
-        
-        # Log de progression
-        if batch_num % 10 == 0 or batch_num == 1:
-            progress = (i / total_chunks) * 100
-            logger.info(f"Batch {batch_num}/{stats['total_batches']} ({progress:.1f}%)")
-        
-        # Génère les embeddings
-        embeddings = embed_batch(client, batch_texts)
-        all_embeddings.extend(embeddings)
-        
-        # Rate limiting
-        if i + BATCH_SIZE < total_chunks:
-            time.sleep(RATE_LIMIT_DELAY)
+    try:
+        for i in range(start_index, total_chunks, BATCH_SIZE):
+            batch_num = i // BATCH_SIZE + 1
+            batch_chunks = chunks[i:i + BATCH_SIZE]
+            batch_texts = [chunk["text"] for chunk in batch_chunks]
+            
+            # Log de progression
+            if batch_num % 10 == 0 or batch_num == 1 or i == start_index:
+                progress = (i / total_chunks) * 100
+                logger.info(f"Batch {batch_num}/{total_batches} ({progress:.1f}%)")
+            
+            # Génère les embeddings
+            embeddings = embed_batch(client, batch_texts)
+            all_embeddings.extend(embeddings)
+            
+            # Sauvegarde checkpoint périodique
+            if batch_num % checkpoint_interval == 0:
+                save_checkpoint(CHECKPOINT_PATH, i + BATCH_SIZE, all_embeddings)
+                logger.info(f"Checkpoint sauvegardé à l'index {i + BATCH_SIZE}")
+            
+            # Rate limiting
+            if i + BATCH_SIZE < total_chunks:
+                time.sleep(RATE_LIMIT_DELAY)
+                
+    except Exception as e:
+        # En cas d'erreur, sauvegarde le checkpoint avant de quitter
+        logger.error(f"Erreur lors de la vectorisation: {e}")
+        save_checkpoint(CHECKPOINT_PATH, i, all_embeddings)
+        logger.info(f"Checkpoint de récupération sauvegardé à l'index {i}")
+        raise
     
     elapsed_time = time.time() - start_time
     stats["processing_time_seconds"] = round(elapsed_time, 2)
-    stats["chunks_per_second"] = round(total_chunks / elapsed_time, 2)
+    stats["chunks_per_second"] = round((total_chunks - start_index) / elapsed_time, 2) if elapsed_time > 0 else 0
     
     # Convertit en numpy array
     embeddings_array = np.array(all_embeddings, dtype=np.float32)
@@ -255,6 +350,9 @@ def main():
         OUTPUT_JSON_PATH,
         OUTPUT_NPY_PATH
     )
+    
+    # Supprime le checkpoint après succès
+    delete_checkpoint(CHECKPOINT_PATH)
     
     logger.info("Vectorisation terminée avec succès")
     

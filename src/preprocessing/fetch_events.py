@@ -7,7 +7,6 @@ depuis l'API OpenDataSoft avec pagination automatique.
 Paramètres de collecte :
 - Zone : Île-de-France
 - Période : 1er janvier 2025 - 31 décembre 2026
-- Volume attendu : ~10 000 événements
 """
 
 import json
@@ -182,7 +181,7 @@ def save_events(events: list[dict], output_path: Path) -> bool:
 def main():
     """Point d'entrée principal du script."""
     # Définition du chemin de sortie
-    project_root = Path(__file__).parent.parent
+    project_root = Path(__file__).parent.parent #/Users/mounirmeknaci/Desktop/Data_Projects/Projet9/src/
     output_path = project_root / "data" / "raw" / "events_raw.json"
 
     # Collecte des événements

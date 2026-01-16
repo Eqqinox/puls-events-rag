@@ -2,11 +2,13 @@
 Script de découpage des textes en chunks pour la vectorisation.
 
 Ce script découpe les textes préparés en chunks de taille appropriée
-pour l'embedding avec Mistral.
+pour l'embedding avec Mistral, en utilisant LangChain.
 
 Stratégie de chunking :
-- Textes courts (< 1000 car.) : 1 chunk = 1 événement
-- Textes longs (>= 1000 car.) : découpage avec overlap
+- Utilisation de RecursiveCharacterTextSplitter de LangChain
+- Séparateurs par défaut : paragraphes, lignes, phrases, espaces
+- Textes courts (< chunk_size) : 1 chunk = 1 événement
+- Textes longs (>= chunk_size) : découpage avec overlap
 
 Usage:
     python src/preprocessing/chunk_events.py
@@ -20,6 +22,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Configuration du logging
 logging.basicConfig(
@@ -40,64 +44,51 @@ CHUNK_SIZE = 800  # Taille cible des chunks en caractères
 CHUNK_OVERLAP = 100  # Chevauchement entre chunks
 MIN_CHUNK_SIZE = 100  # Taille minimale d'un chunk
 
+# Séparateurs pour le découpage (du plus prioritaire au moins prioritaire)
+# Priorité : double saut de ligne > saut de ligne > point + espace > espace
+SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
+
+
+# Instance du text splitter LangChain
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=CHUNK_SIZE,
+    chunk_overlap=CHUNK_OVERLAP,
+    length_function=len,
+    separators=SEPARATORS,
+    keep_separator=True,
+    strip_whitespace=True
+)
+
 
 def split_text_into_chunks(
     text: str,
-    chunk_size: int = CHUNK_SIZE,
-    overlap: int = CHUNK_OVERLAP,
     min_size: int = MIN_CHUNK_SIZE
 ) -> list[str]:
     """
-    Découpe un texte en chunks avec overlap.
+    Découpe un texte en chunks avec overlap en utilisant LangChain.
     
     Args:
         text: Texte à découper
-        chunk_size: Taille cible des chunks
-        overlap: Chevauchement entre chunks
         min_size: Taille minimale d'un chunk
         
     Returns:
         Liste des chunks
     """
-    if not text or len(text) <= chunk_size:
-        return [text] if text else []
+    if not text:
+        return []
     
-    chunks = []
-    start = 0
+    # Utilise LangChain pour découper le texte
+    chunks = text_splitter.split_text(text)
     
-    while start < len(text):
-        # Calcule la fin du chunk
-        end = start + chunk_size
-        
-        # Si on n'est pas à la fin, cherche un point de coupure naturel
-        if end < len(text):
-            # Cherche un saut de ligne, un point, ou un espace
-            best_break = -1
-            
-            # Cherche dans les 100 derniers caractères du chunk
-            search_start = max(end - 100, start + min_size)
-            search_text = text[search_start:end]
-            
-            # Priorité : saut de ligne > point > espace
-            for sep in ["\n\n", "\n", ". ", " "]:
-                pos = search_text.rfind(sep)
-                if pos != -1:
-                    best_break = search_start + pos + len(sep)
-                    break
-            
-            if best_break > start + min_size:
-                end = best_break
-        
-        # Extrait le chunk
-        chunk = text[start:end].strip()
-        
-        if len(chunk) >= min_size:
-            chunks.append(chunk)
-        
-        # Avance avec overlap
-        start = end - overlap if end < len(text) else len(text)
+    # Filtre les chunks trop petits
+    filtered_chunks = [chunk for chunk in chunks if len(chunk) >= min_size]
     
-    return chunks
+    # Si tous les chunks sont filtrés mais le texte original est valide,
+    # on retourne le texte original comme unique chunk
+    if not filtered_chunks and len(text.strip()) >= min_size:
+        return [text.strip()]
+    
+    return filtered_chunks
 
 
 def chunk_event(event: dict) -> list[dict]:
@@ -114,7 +105,7 @@ def chunk_event(event: dict) -> list[dict]:
     metadata = event.get("metadata", {})
     event_id = event.get("id", "")
     
-    # Découpe le texte
+    # Découpe le texte avec LangChain
     text_chunks = split_text_into_chunks(text)
     
     # Crée un document par chunk
@@ -172,10 +163,12 @@ def save_chunked_events(chunks: list[dict], metadata: dict, stats: dict, path: P
         "source_metadata": metadata,
         "chunking": {
             "chunked_at": datetime.utcnow().isoformat() + "Z",
+            "method": "langchain_recursive_character_text_splitter",
             "parameters": {
                 "chunk_size": CHUNK_SIZE,
                 "chunk_overlap": CHUNK_OVERLAP,
-                "min_chunk_size": MIN_CHUNK_SIZE
+                "min_chunk_size": MIN_CHUNK_SIZE,
+                "separators": SEPARATORS
             },
             "statistics": stats
         }
@@ -195,7 +188,7 @@ def save_chunked_events(chunks: list[dict], metadata: dict, stats: dict, path: P
 def main():
     """Fonction principale de chunking."""
     logger.info("=" * 60)
-    logger.info("DECOUPAGE DES TEXTES EN CHUNKS")
+    logger.info("DÉCOUPAGE DES TEXTES EN CHUNKS (LangChain)")
     logger.info("=" * 60)
     
     # Charge les données préparées

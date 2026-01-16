@@ -8,7 +8,7 @@ Usage:
     python src/vectorstore/faiss_index.py
 
 Entrées:
-    - data/processed/embeddings.npy (14767 vecteurs x 1024 dimensions)
+    - data/processed/embeddings.npy (15928 vecteurs x 1024 dimensions)
     - data/processed/events_vectorized.json (métadonnées des chunks)
 
 Sorties:
