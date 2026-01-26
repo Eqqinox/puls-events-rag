@@ -42,15 +42,99 @@ load_dotenv()
 
 # Chemin de l'index (BASE_DIR déjà défini en haut)
 INDEX_PATH = BASE_DIR / "src" / "data" / "processed" / "faiss_index"
+EVENTS_PATH = BASE_DIR / "src" / "data" / "processed" / "events_cleaned.json"
+
+
+def get_database_stats() -> Dict[str, Any]:
+    """
+    Calcule les statistiques de la base d'événements.
+
+    Returns:
+        Dictionnaire avec les statistiques de la base
+    """
+    import json
+
+    try:
+        with open(EVENTS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        events = data.get('events', [])
+        total_events = len(events)
+
+        # Compter les événements par année
+        count_2025 = 0
+        count_2026 = 0
+
+        for event in events:
+            first_begin = event.get('firstdate_begin', '')
+            first_end = event.get('firstdate_end', '')
+            last_begin = event.get('lastdate_begin', '')
+            last_end = event.get('lastdate_end', '')
+
+            all_dates = f'{first_begin} {first_end} {last_begin} {last_end}'
+
+            if '2026' in all_dates:
+                count_2026 += 1
+            if '2025' in all_dates:
+                count_2025 += 1
+
+        return {
+            'total_events': total_events,
+            'events_2025': count_2025,
+            'events_2026': count_2026,
+            'pct_2025': round(count_2025 / total_events * 100, 1) if total_events > 0 else 0,
+            'pct_2026': round(count_2026 / total_events * 100, 1) if total_events > 0 else 0
+        }
+
+    except Exception as e:
+        logger.warning(f"Impossible de charger les statistiques de la base: {e}")
+        # Retourne des stats par défaut en cas d'erreur
+        return {
+            'total_events': 0,
+            'events_2025': 0,
+            'events_2026': 0,
+            'pct_2025': 0,
+            'pct_2026': 0
+        }
 
 
 # Template de prompt pour les recommandations d'événements culturels
-SYSTEM_PROMPT = """Tu es un assistant intelligent spécialisé dans les recommandations d'événements culturels à Paris et en Île-de-France.
+def get_system_prompt(db_stats: Optional[Dict[str, Any]] = None):
+    """Génère le prompt système avec la date actuelle et les statistiques de la base."""
+    from datetime import datetime
+
+    now = datetime.now()
+    current_date = now.strftime("%d/%m/%Y")
+    current_year = now.year
+    current_month = now.strftime("%B %Y")
+    current_day_name = now.strftime("%A")
+
+    # Charger les stats si non fournies
+    if db_stats is None:
+        db_stats = get_database_stats()
+
+    # Construire la section statistiques
+    stats_section = f"""
+STATISTIQUES DE LA BASE :
+- Total d'événements en base : {db_stats['total_events']:,} événements
+- Événements 2025 : {db_stats['events_2025']:,} ({db_stats['pct_2025']}%)
+- Événements 2026 : {db_stats['events_2026']:,} ({db_stats['pct_2026']}%)
+- Période couverte : 2025-2026
+- Zone géographique : Paris et Île-de-France"""
+
+    return f"""Tu es un assistant intelligent spécialisé dans les recommandations d'événements culturels à Paris et en Île-de-France.
 
 Ta mission est d'aider les utilisateurs à découvrir des événements culturels pertinents (concerts, expositions, théâtre, spectacles, etc.) en fonction de leurs questions.
 
+INFORMATIONS CONTEXTUELLES :
+- Date actuelle : {current_date} ({current_day_name})
+- Année en cours : {current_year}
+- Mois en cours : {current_month}
+- Zone géographique couverte : Paris et Île-de-France uniquement
+{stats_section}
+
 CONTEXTE DES ÉVÉNEMENTS :
-{context}
+{{context}}
 
 RÈGLES À RESPECTER :
 1. Base-toi UNIQUEMENT sur les événements fournis dans le contexte ci-dessus
@@ -64,11 +148,19 @@ RÈGLES À RESPECTER :
 5. Si aucun événement ne correspond, dis-le clairement et propose des alternatives similaires
 6. Sois naturel et conversationnel dans tes réponses
 7. Ne jamais inventer d'informations qui ne sont pas dans le contexte
+8. Si l'utilisateur pose une question qui n'est pas en rapport avec la recherche d'événements culturels, réponds poliment que tu es conçu uniquement pour aider à trouver des événements culturels et que tu ne peux malheureusement pas répondre à d'autres types de questions
+9. Si l'utilisateur demande des événements en dehors de Paris et d'Île-de-France, indique que tu ne disposes pas d'informations sur les événements en dehors de cette zone géographique
+10. Utilise la date actuelle pour interpréter correctement les références temporelles comme "ce weekend", "cette semaine", "ce mois-ci"
+11. Pour les questions de comptage ("combien", "nombre de"), utilise les statistiques de la base fournies ci-dessus plutôt que de compter les événements dans le contexte
+12. Si, dans la question, l'année n'est pas spécifiée, tu répondras avec les événements de l'année en cours seulement
 
 QUESTION DE L'UTILISATEUR :
-{question}
+{{question}}
 
 RÉPONSE :"""
+
+# Variable globale pour compatibilité avec les tests
+SYSTEM_PROMPT = get_system_prompt()
 
 
 class PulsEventsRAG:
@@ -144,8 +236,14 @@ class PulsEventsRAG:
         )
         logger.info("Modèle configuré avec succès")
 
-        # Configuration du prompt
-        self.prompt = ChatPromptTemplate.from_template(SYSTEM_PROMPT)
+        # Chargement des statistiques de la base
+        logger.info("Chargement des statistiques de la base...")
+        self.db_stats = get_database_stats()
+        logger.info(f"Statistiques chargées: {self.db_stats['total_events']} événements "
+                   f"({self.db_stats['events_2025']} en 2025, {self.db_stats['events_2026']} en 2026)")
+
+        # Configuration du prompt (régénéré avec date actuelle et stats à chaque initialisation)
+        self.prompt = ChatPromptTemplate.from_template(get_system_prompt(self.db_stats))
 
         # Construction de la chaîne RAG
         self.chain = self._build_chain()

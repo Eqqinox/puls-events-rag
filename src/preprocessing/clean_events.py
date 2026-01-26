@@ -396,11 +396,11 @@ def main():
     
     # Sauvegarde
     save_cleaned_events(cleaned_events, metadata, OUTPUT_PATH)
-    
+
     logger.info("Nettoyage termine avec succes")
-    
-    return stats
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

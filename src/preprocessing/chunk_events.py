@@ -268,11 +268,11 @@ def main():
     
     # Sauvegarde
     save_chunked_events(all_chunks, metadata, stats, OUTPUT_PATH)
-    
+
     logger.info("Chunking terminé avec succès")
-    
-    return all_chunks, stats
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

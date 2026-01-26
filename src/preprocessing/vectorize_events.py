@@ -353,11 +353,11 @@ def main():
     
     # Supprime le checkpoint après succès
     delete_checkpoint(CHECKPOINT_PATH)
-    
+
     logger.info("Vectorisation terminée avec succès")
-    
-    return embeddings_array, stats
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())

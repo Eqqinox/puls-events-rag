@@ -8,12 +8,12 @@ Usage:
     python src/vectorstore/faiss_index.py
 
 Entrées:
-    - data/processed/embeddings.npy (15928 vecteurs x 1024 dimensions)
-    - data/processed/events_vectorized.json (métadonnées des chunks)
+    - src/data/processed/embeddings.npy (15928 vecteurs x 1024 dimensions)
+    - src/data/processed/events_vectorized.json (métadonnées des chunks)
 
 Sorties:
-    - data/processed/faiss_index/index.faiss (index Faiss)
-    - data/processed/faiss_index/index.pkl (métadonnées)
+    - src/data/processed/faiss_index/index.faiss (index Faiss)
+    - src/data/processed/faiss_index/index.pkl (métadonnées)
 """
 
 import json

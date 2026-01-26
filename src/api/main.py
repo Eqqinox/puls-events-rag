@@ -59,7 +59,14 @@ app = FastAPI(
 # ENDPOINTS
 # ============================================================================
 
-@app.get("/health", response_model=HealthResponse)
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    responses={
+        200: {"description": "API opérationnelle"},
+        503: {"model": ErrorResponse, "description": "Service non disponible"}
+    }
+)
 async def health_check():
     """
     Endpoint de vérification de l'état de l'API.
@@ -82,7 +89,17 @@ async def health_check():
     return {"status": "ok"}
 
 
-@app.post("/ask", response_model=AskResponse)
+@app.post(
+    "/ask",
+    response_model=AskResponse,
+    responses={
+        200: {"description": "Réponse générée avec succès"},
+        400: {"model": ErrorResponse, "description": "Requête invalide (question vide)"},
+        422: {"description": "Erreur de validation des données"},
+        500: {"model": ErrorResponse, "description": "Erreur interne du serveur"},
+        503: {"model": ErrorResponse, "description": "Service non disponible"}
+    }
+)
 async def ask_question(request: AskRequest):
     """
     Endpoint principal pour poser une question au système RAG.
@@ -146,7 +163,14 @@ async def ask_question(request: AskRequest):
         )
 
 
-@app.post("/rebuild", response_model=RebuildResponse)
+@app.post(
+    "/rebuild",
+    response_model=RebuildResponse,
+    responses={
+        200: {"description": "Index rechargé avec succès"},
+        500: {"model": ErrorResponse, "description": "Erreur lors du rechargement de l'index"}
+    }
+)
 async def rebuild_index():
     """
     Endpoint pour reconstruire l'index Faiss et réinitialiser le RAG.
