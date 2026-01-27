@@ -106,54 +106,61 @@ Projet académique - Formation Expert en Ingénierie et Science des Données
 
 ```mermaid
 graph TB
-    subgraph "Couche Présentation"
-        USER[("Utilisateur")]
-        SWAGGER["Swagger UI<br/>/docs"]
-    end
+      subgraph "Couche Présentation"
+          USER[("Utilisateur")]
+          SWAGGER["Swagger UI<br/>/docs"]
+      end
 
-    subgraph "Couche API"
-        API["FastAPI<br/>main.py"]
-        HEALTH["/health"]
-        ASK["/ask"]
-        REBUILD["/rebuild"]
-    end
+      subgraph "Couche API"
+          API["FastAPI<br/>main.py"]
+          HEALTH["/health"]
+          ASK["/ask"]
+          REBUILD["/rebuild"]
+      end
 
-    subgraph "Couche Métier"
-        RAG["PulsEventsRAG<br/>rag_chain.py"]
-        RETRIEVER["Retriever<br/>k=5 chunks"]
-        PROMPT["Prompt Système<br/>+ Contexte"]
-    end
+      subgraph "Couche Métier"
+          RAG["PulsEventsRAG<br/>rag_chain.py"]
+          RETRIEVER["Retriever<br/>k=5 chunks"]
+          PROMPT["Prompt Système<br/>+ Contexte"]
+      end
 
-    subgraph "Couche Données"
-        FAISS[("Index Faiss<br/>15 928 vecteurs")]
-        METADATA[("Métadonnées<br/>9 988 événements")]
-    end
+      subgraph "Couche Données"
+          FAISS[("Index Faiss<br/>15 928 vecteurs")]
+          METADATA[("Métadonnées<br/>9 988 événements")]
+      end
 
-    subgraph "Services Externes"
-        MISTRAL_EMBED["Mistral Embed<br/>Vectorisation"]
-        MISTRAL_LLM["Mistral Small<br/>Génération"]
-    end
+      subgraph "Services Externes"
+          MISTRAL_EMBED["Mistral Embed<br/>Vectorisation"]
+          MISTRAL_LLM["Mistral Small<br/>Génération"]
+      end
 
-    USER -->|"Question"| API
-    SWAGGER -->|"Test endpoints"| API
-    API --> HEALTH
-    API --> ASK
-    API --> REBUILD
+      USER -->|"1. Question"| API
+      SWAGGER -->|"Test endpoints"| API
+      API --> HEALTH
+      API --> ASK
+      API --> REBUILD
 
-    ASK -->|"Interroge"| RAG
-    REBUILD -->|"Recharge"| RAG
+      ASK -->|"2. Interroge"| RAG
+      REBUILD -->|"Recharge"| RAG
 
-    RAG --> RETRIEVER
-    RAG --> PROMPT
-    RETRIEVER -->|"Recherche similarité"| FAISS
-    RETRIEVER -->|"Récupère"| METADATA
-    RETRIEVER -->|"Vectorise query"| MISTRAL_EMBED
+      RAG -->|"3. Lance recherche"| RETRIEVER
+      RETRIEVER -->|"4. Vectorise query"| MISTRAL_EMBED
+      MISTRAL_EMBED -.->|"5. Vecteur query"| RETRIEVER
+      RETRIEVER -->|"6. Recherche similarité"| FAISS
+      FAISS -.->|"7. Top-5 chunks"| RETRIEVER
+      RETRIEVER -->|"8. Récupère métadonnées"| METADATA
+      METADATA -.->|"9. Métadonnées chunks"| RETRIEVER
+      RETRIEVER -->|"10. Contexte"| PROMPT
+      RAG --> PROMPT
+      PROMPT -->|"11. Génère réponse"| MISTRAL_LLM
+      MISTRAL_LLM -.->|"12. Réponse générée"| PROMPT
+      PROMPT -.->|"13. Réponse formatée"| RAG
+      RAG -.->|"14. Réponse + sources"| ASK
+      ASK -.->|"15. JSON Response"| API
+      API -.->|"16. Réponse"| USER
 
-    PROMPT -->|"Génère réponse"| MISTRAL_LLM
-
-    FAISS -.->|"Stocke"| METADATA
+      FAISS -.->|"Stocke"| METADATA
 ```
-
 ---
 
 ## Métriques du projet
@@ -170,24 +177,21 @@ graph TB
 | **Période couverte** | 2025-2026 | Événements 2025 : 9 546 (95.6%), Événements 2026 : 458 (4.6%) |
 | **Zone géographique** | Île-de-France | 8 départements, 698 villes |
 | **Tests unitaires** | 201 tests | Couverture : 100% |
-| **Lignes de code** | ~5 500 | Scripts, modules, tests, API |
 
 ### Performance du système RAG
 
-Évaluation réalisée le 21 janvier 2026 sur un jeu de test annoté de 17 questions (test_set.json v1.2).
-
 | Métrique | Valeur | Standard industrie | Évaluation |
 |----------|--------|-------------------|------------|
-| **Similarité sémantique moyenne** | 93.7% | 85-90% | Excellent |
+| **Similarité sémantique moyenne** | 93.6% | 85-90% | Excellent |
 | **Exact matches** | 0/17 (0%) | 5-15% | Ok pour RAG génératif |
-| **Partial matches** | 3/17 (17.6%) | 40-60% | À améliorer |
-| **Rappel retrieval moyen** | 52.3% | 70%+ | Acceptable pour POC |
-| **Classification automatique** | 16/16 (100%) | 90%+ | Excellent |
+| **Partial matches** | 2/17 (11.8%) | 40-60% | À améliorer |
+| **Rappel retrieval moyen** | 52.7% | 70%+ | Acceptable pour POC |
+| **Classification automatique** | 17/17 (100%) | 90%+ | Excellent |
 | **Temps de réponse moyen** | ~5 secondes | <10s | Acceptable |
 
 **Axes d'amélioration** :
-- Rappel retrieval (52.3% vs 70%+ production) : augmenter k, affiner le chunking, utiliser un reranker
-- Partial matches (17.6% vs 40-60% standard) : optimiser le prompt système ou ajuster la température
+- Rappel retrieval (52.7% vs 70%+ production) : augmenter k, affiner le chunking, utiliser un reranker
+- Partial matches (11.8% vs 40-60% standard) : optimiser le prompt système ou ajuster la température
 
 ---
 
@@ -228,7 +232,6 @@ graph TB
 │   └── test_vectorstore.py          
 ├── .dockerignore                       # Exclusions Docker
 ├── Dockerfile                          # Image Docker de l'API
-├── metriques_.md                       # Métriques du projet
 ├── .env.example                        # Template des variables d'environnement
 ├── .gitignore                          # Exclusions github
 ├── .python-version                  
@@ -282,7 +285,7 @@ cp .env.example .env
 
 Contenu du fichier `.env` :
 ```bash
-MISTRAL_API_KEY=votre_cle_api_mistral
+MISTRAL_API_KEY=cle_api_mistral
 ```
 
 **Important** : Ne jamais commiter le fichier `.env`
