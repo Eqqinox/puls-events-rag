@@ -16,19 +16,20 @@
 
 1. [Contexte du projet](#contexte-du-projet)
 2. [Architecture technique](#architecture-technique)
-3. [Métriques du projet](#métriques-du-projet)
-4. [Structure du projet](#structure-du-projet)
-5. [Installation](#installation)
-6. [Utilisation](#utilisation)
-7. [API REST](#api-rest)
-8. [Conteneurisation Docker](#conteneurisation-docker)
-9. [Système RAG](#système-rag)
-10. [Tests](#tests)
-11. [Évaluation du système](#évaluation-du-système)
-12. [Configuration avancée](#configuration-avancée)
-13. [Améliorations futures](#améliorations-futures)
-14. [Licence](#licence)
-15. [Auteur](#auteur)
+3. [Préparation des données](#préparation-des-données)
+4. [Métriques du projet](#métriques-du-projet)
+5. [Structure du projet](#structure-du-projet)
+6. [Installation](#installation)
+7. [Utilisation](#utilisation)
+8. [API REST](#api-rest)
+9. [Conteneurisation Docker](#conteneurisation-docker)
+10. [Système RAG](#système-rag)
+11. [Tests](#tests)
+12. [Évaluation du système](#évaluation-du-système)
+13. [Configuration avancée](#configuration-avancée)
+14. [Améliorations futures](#améliorations-futures)
+15. [Licence](#licence)
+16. [Auteur](#auteur)
 
 ---
 
@@ -161,6 +162,72 @@ graph TB
 
       FAISS -.->|"Stocke"| METADATA
 ```
+---
+
+## Préparation des données
+
+### Source de données
+
+Les données proviennent de l'API OpenDataSoft (dataset `evenements-publics-openagenda`), filtrées sur la région Ile-de-France pour la période du 1er janvier 2025 au 31 décembre 2026. La collecte a permis de récupérer 10 000 événements culturels via un script de collecte paginé avec retry logic et gestion du rate limiting.
+
+### Nettoyage et normalisation
+
+Le nettoyage des données a permis de passer de 10 000 à 9 988 événements (taux de rétention : 99.9%). Les traitements suivants ont été appliqués :
+
+**Nettoyage HTML** : Suppression des balises présentes dans les descriptions longues (p, br, strong, a, em, h2, h3, ul, li) et décodage des entités HTML (&nbsp;, &amp;, &eacute;, etc.). 96.4% des événements contenaient du HTML dans le champ `longdescription_fr`.
+
+**Normalisation des départements** : Correction de plus de 20 variantes identifiées lors de l'exploration des données. Exemples d'anomalies corrigées :
+- Val-D'Oise / Val-d'Oise (casse de l'apostrophe)
+- Seine-St-Denis / Seine-Saint-Denis (abréviation)
+- Codes postaux (75010, 75011, ..., 75018) remappés vers "Paris"
+
+**Normalisation des villes** : Standardisation de la casse (PARIS vers Paris). 143 corrections appliquées.
+
+**Normalisation des mots-clés** : Conversion en minuscules et déduplication (théatre / Théatre, musique / Musique).
+
+**Exclusions** : 4 événements sans titre ou description, 8 événements hors Ile-de-France (Métropole de Lyon, Nord).
+
+### Structuration pour le RAG
+
+Chaque événement nettoyé est transformé en un texte structuré pour l'embedding, au format suivant :
+
+```
+Titre: [title_fr]
+Description: [description_fr]
+Détails: [longdescription_fr - tronqué à 1000 caractères]
+Lieu: [location_name], [city], [department]
+Date: [daterange_fr]
+Mots-clés: [keywords_fr]
+Conditions: [conditions_fr]
+```
+
+13 champs de métadonnées sont extraits et conservés pour chaque événement (uid, title, description, date_range, date_start, date_end, location_name, city, department, url, image, keywords, conditions).
+
+### Chunking
+
+Le découpage des textes est réalisé avec le `RecursiveCharacterTextSplitter` de LangChain, qui recherche des points de coupure naturels selon une hiérarchie de séparateurs :
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Taille cible | 800 caractères |
+| Overlap | 100 caractères |
+| Taille minimale | 100 caractères |
+| Séparateurs | `\n\n`, `\n`, `. `, ` `, `""` |
+
+Résultats : 15 928 chunks générés à partir de 9 988 événements (ratio de 1.59 chunk par événement). 52% des événements produisent un seul chunk, 48% sont découpés en 2 à 3 chunks.
+
+### Vectorisation
+
+Les embeddings sont générés avec le modèle `mistral-embed` de Mistral AI (1024 dimensions). Le script de vectorisation intègre un système de checkpoints (sauvegarde tous les 50 batches) permettant la reprise automatique en cas d'interruption, ainsi qu'un retry avec backoff exponentiel pour gérer le rate limiting de l'API.
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Modèle | mistral-embed |
+| Dimension | 1024 |
+| Batch size | 50 textes |
+| Vecteurs générés | 15 928 |
+| Taille de la matrice | 62.22 MB |
+
 ---
 
 ## Métriques du projet
